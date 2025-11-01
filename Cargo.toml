@@ -1,0 +1,12 @@
+[package]
+name = "dcm-redact"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+dicom = { version = "0.9.0", features = ["image"] }
+eframe = { version = "0.28", features = ["wgpu"] }
+egui = "0.28"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.14"   # simple file picker
