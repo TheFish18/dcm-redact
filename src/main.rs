@@ -1,4 +1,4 @@
-use anyhow;
+use anyhow::{Context, anyhow};
 use dicom::core::smallvec::SmallVec;
 use dicom::pixeldata::PixelDecoder;
 use dicom::{
@@ -19,6 +19,11 @@ use std::os::raw;
 use std::path::PathBuf;
 
 type Gray16Image = ImageBuffer<Luma<u16>, Vec<u16>>;
+
+#[derive(Debug)]
+enum DCMRedactErrors {
+    ValueError(String),
+}
 
 fn write_dynamic_image_to_dicom(
     file_obj: &mut dicom::object::FileDicomObject<InMemDicomObject>,
@@ -102,6 +107,7 @@ struct App {
     max_dim: u32,   // max dimension
     is_dcm: bool,
     dcm: Option<FileDicomObject<InMemDicomObject>>,
+    last_error: Option<String>,
 }
 
 impl App {
@@ -118,73 +124,158 @@ impl App {
             max_dim: 1024,
             is_dcm: false,
             dcm: None,
+            last_error: None,
         }
     }
 
-    fn load_dcm(&mut self, path: &PathBuf) -> DynamicImage {
-        self.dcm = Some(dicom::object::open_file(&path).unwrap());
+    fn load_dcm(&mut self, path: &PathBuf) -> Result<DynamicImage, DCMRedactErrors> {
+        // Try to open the DICOM file
+        let file = dicom::object::open_file(&path)
+            .map_err(|e| DCMRedactErrors::ValueError(format!("Failed to open DICOM file: {e}")))?;
+        self.dcm = Some(file);
         self.is_dcm = true;
 
         if let Some(dcm) = self.dcm.as_ref() {
-            let bits_allocated: u16 = dcm.element(tags::BITS_ALLOCATED).unwrap().to_int().unwrap();
+            // Check Bits Allocated
+            let bits_allocated: u16 = dcm
+                .element(tags::BITS_ALLOCATED)
+                .map_err(|_| DCMRedactErrors::ValueError("Missing BITS_ALLOCATED tag".to_string()))?
+                .to_int()
+                .map_err(|_| {
+                    DCMRedactErrors::ValueError("Invalid BITS_ALLOCATED value".to_string())
+                })?;
+
             if bits_allocated != 16u16 {
-                panic!("Mismatched BITS_ALLOCATED, expected 16 got {bits_allocated}");
+                return Err(DCMRedactErrors::ValueError(format!(
+                    "Mismatched BITS_ALLOCATED, expected 16 got {bits_allocated}"
+                )));
             }
 
-            let bits_stored: u16 = dcm.element(tags::BITS_STORED).unwrap().to_int().unwrap();
+            // Check Bits Stored
+            let bits_stored: u16 = dcm
+                .element(tags::BITS_STORED)
+                .map_err(|_| DCMRedactErrors::ValueError("Missing BITS_STORED tag".to_string()))?
+                .to_int()
+                .map_err(|_| {
+                    DCMRedactErrors::ValueError("Invalid BITS_STORED value".to_string())
+                })?;
+
             if bits_stored != 12u16 {
-                panic!("Mismatched BITS_STORED, expected 12 got {bits_stored}");
+                return Err(DCMRedactErrors::ValueError(format!(
+                    "Mismatched BITS_STORED, expected 12 got {bits_stored}"
+                )));
             }
 
+            // Check Photometric Interpretation
             let photometric_interpret = dcm
                 .element(tags::PHOTOMETRIC_INTERPRETATION)
-                .unwrap()
+                .map_err(|_| {
+                    DCMRedactErrors::ValueError(
+                        "Missing PHOTOMETRIC_INTERPRETATION tag".to_string(),
+                    )
+                })?
                 .to_str()
-                .unwrap()
+                .map_err(|_| {
+                    DCMRedactErrors::ValueError(
+                        "Invalid PHOTOMETRIC_INTERPRETATION value (not UTF-8)".to_string(),
+                    )
+                })?
                 .into_owned();
-            if photometric_interpret != "MONOCHROME2".to_string() {
-                panic!(
+
+            if photometric_interpret != "MONOCHROME2" {
+                return Err(DCMRedactErrors::ValueError(format!(
                     "Mismatched PHOTOMETRIC_INTERPRETATION, expected MONOCHROME2 got {photometric_interpret}"
-                )
+                )));
             }
         }
 
-        self.dcm
+        // Decode pixel data safely
+        let dyn_img = self
+            .dcm
             .as_mut()
-            .unwrap()
+            .ok_or_else(|| DCMRedactErrors::ValueError("Missing DICOM object".to_string()))?
             .decode_pixel_data()
-            .unwrap()
+            .map_err(|e| DCMRedactErrors::ValueError(format!("Failed to decode pixel data: {e}")))?
             .to_dynamic_image(0)
-            .unwrap()
+            .map_err(|e| {
+                DCMRedactErrors::ValueError(format!("Failed to convert to DynamicImage: {e}"))
+            })?;
+
+        Ok(dyn_img)
     }
 
+    //    fn load_image(&mut self, ctx: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
+    //        let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+    //            if ext.eq_ignore_ascii_case("dcm") {
+    //                self.load_dcm(&path).unwrap()
+    //            } else {
+    //                self.is_dcm = false;
+    //                self.dcm = None;
+    //                image::open(&path)?
+    //            }
+    //        } else {
+    //            self.is_dcm = false;
+    //            // Default if no extension
+    //            image::open(&path)?
+    //        };
+    //
+    //        let gray_img = dyn_img.to_luma16();
+    //        // let dyn_img = max_dim_resize(dyn_img, self.max_dim);
+    //
+    //        // let rgba = dyn_img.to_rgba8();
+    //        // let color_img = dynamic_to_color_image(&DynamicImage::ImageRgba8(dyn_img.to_rgba8()));
+    //        let color_img = dynamic_to_color_image(&dyn_img);
+    //        self.gray_img = Some(gray_img);
+    //        self.color_img = Some(color_img.clone());
+    //        // (Re)upload texture
+    //        self.tex = Some(ctx.load_texture("image", color_img, egui::TextureOptions::LINEAR));
+    //        self.opened_path = Some(path);
+    //        self.fit_scale = 1.0;
+    //        Ok(())
+    //    }
+
     fn load_image(&mut self, ctx: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
-        let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if ext.eq_ignore_ascii_case("dcm") {
-                self.load_dcm(&path)
-            } else {
-                self.is_dcm = false;
-                self.dcm = None;
-                image::open(&path)?
+        // Try to load without mutating state first
+        let dyn_img = match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("dcm") => {
+                // Your load_dcm returns Result<DynamicImage, DCMRedactErrors>
+                let img = self
+                    .load_dcm(&path)
+                    .map_err(|e| anyhow!("Invalid DICOM: {:?}", e))?;
+                // load_dcm can set flags like is_dcm, but if you want to avoid partial state,
+                // you can set them after success below.
+                img
             }
-        } else {
-            self.is_dcm = false;
-            // Default if no extension
-            image::open(&path)?
+            _ => {
+                // Non-DICOM path
+                let img = image::open(&path)
+                    .with_context(|| format!("Failed to open image: {}", path.display()))?;
+                img
+            }
         };
 
-        let gray_img = dyn_img.to_luma16();
-        // let dyn_img = max_dim_resize(dyn_img, self.max_dim);
+        // If we got here, it's safe to update state
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("dcm"))
+            .unwrap_or(false)
+        {
+            self.is_dcm = true;
+        } else {
+            self.is_dcm = false;
+            self.dcm = None;
+        }
 
-        // let rgba = dyn_img.to_rgba8();
-        // let color_img = dynamic_to_color_image(&DynamicImage::ImageRgba8(dyn_img.to_rgba8()));
+        let gray_img = dyn_img.to_luma16();
         let color_img = dynamic_to_color_image(&dyn_img);
+
         self.gray_img = Some(gray_img);
         self.color_img = Some(color_img.clone());
-        // (Re)upload texture
         self.tex = Some(ctx.load_texture("image", color_img, egui::TextureOptions::LINEAR));
         self.opened_path = Some(path);
         self.fit_scale = 1.0;
+
         Ok(())
     }
 
@@ -242,8 +333,31 @@ impl eframe::App for App {
                         .pick_file()
                     {
                         if let Err(e) = self.load_image(ctx, path) {
-                            eprintln!("Failed to open image: {e}");
+                            self.last_error = Some(e.to_string());
                         }
+                    }
+                }
+                if self.last_error.is_some() {
+                    let mut dismiss = false;
+
+                    egui::Window::new("Error")
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .show(ctx, |ui| {
+                            // Borrow immutably only inside this closure
+                            if let Some(err) = &self.last_error {
+                                ui.label(err);
+                            }
+                            // Record the click; do not mutate here
+                            if ui.button("OK").clicked() {
+                                dismiss = true;
+                            }
+                        });
+
+                    // Now mutate after the borrow ends
+                    if dismiss {
+                        self.last_error = None;
                     }
                 }
                 if ui.button("Save As…").clicked() {
