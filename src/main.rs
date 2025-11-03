@@ -217,15 +217,16 @@ impl eframe::App for App {
                     if let (Some(img), Some(path)) =
                         (self.gray_img.as_ref(), self.opened_path.clone())
                     {
-                        let file_name = path.file_name().unwrap().to_owned();
-                        let mut new_path = path.parent().unwrap().to_path_buf();
+                        let file_name = path.file_name().unwrap().to_owned().into_string().unwrap();
+                        //let mut new_path = path.parent().unwrap().to_path_buf();
 
-                        new_path.push("redacted");
-                        new_path.push(file_name);
+                        //new_path.push("redacted");
+                        //new_path.push(file_name);
+                        //
+                        // let default = new_path.into_os_string().into_string().unwrap();
 
-                        let default = new_path.into_os_string().into_string().unwrap();
-
-                        if let Some(out) = rfd::FileDialog::new().set_file_name(default).save_file()
+                        if let Some(out) =
+                            rfd::FileDialog::new().set_file_name(file_name).save_file()
                         {
                             if self.is_dcm {
                                 if let Some(dcm) = self.dcm.as_mut() {
