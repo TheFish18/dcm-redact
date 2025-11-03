@@ -25,7 +25,12 @@ fn write_dynamic_image_to_dicom(
     img: &Gray16Image,
     save_path: &PathBuf,
 ) {
-    let raw_u16 = SmallVec::from_vec(img.to_vec());
+    let mut buf = img.to_vec();
+    for px in &mut buf {
+        *px = (*px >> 4) & 0x0FFF
+    }
+
+    let raw_u16 = SmallVec::from_vec(buf);
     let new_pxs = DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::U16(raw_u16));
 
     file_obj.put(new_pxs);
