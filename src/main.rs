@@ -11,11 +11,7 @@ use eframe::{
     egui,
     egui::{ColorImage, Pos2, Rect, Sense, Stroke, Vec2},
 };
-use egui::epaint::tessellator::Path;
-use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma};
-use std::cmp::max;
-use std::os::raw;
+use image::{DynamicImage, ImageBuffer, Luma};
 use std::path::PathBuf;
 
 type Gray16Image = ImageBuffer<Luma<u16>, Vec<u16>>;
@@ -39,7 +35,7 @@ fn write_dynamic_image_to_dicom(
     let new_pxs = DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::U16(raw_u16));
 
     file_obj.put(new_pxs);
-    file_obj.write_to_file(save_path);
+    let _ = file_obj.write_to_file(save_path);
 }
 
 /// Turn pixels in the given (x0..x1, y0..y1) rectangle to black (in-place).
@@ -71,24 +67,6 @@ fn dynamic_to_color_image(img: &DynamicImage) -> ColorImage {
     }
 }
 
-fn max_dim_resize(dyn_img: DynamicImage, max_dim: u32) -> DynamicImage {
-    let (img_w, img_h) = dyn_img.dimensions();
-
-    if img_w <= max_dim && img_h <= max_dim {
-        return dyn_img;
-    }
-
-    let scale = max_dim_scale(img_w, img_h, max_dim);
-    let new_w = (img_w as f32 * scale).round() as u32;
-    let new_h = (img_h as f32 * scale).round() as u32;
-
-    dyn_img.resize(new_w, new_h, FilterType::Triangle)
-}
-
-fn max_dim_scale(img_w: u32, img_h: u32, max_dim: u32) -> f32 {
-    max_dim as f32 / (max(img_w, img_h) as f32)
-}
-
 struct App {
     // Source image (mutable for edits)
     gray_img: Option<Gray16Image>,
@@ -104,7 +82,6 @@ struct App {
     // Bookkeeping
     opened_path: Option<PathBuf>,
     fit_scale: f32, // UI zoom to fit (1.0 = native)
-    max_dim: u32,   // max dimension
     is_dcm: bool,
     dcm: Option<FileDicomObject<InMemDicomObject>>,
     last_error: Option<String>,
@@ -121,7 +98,6 @@ impl App {
             drag_current_screen: None,
             opened_path: None,
             fit_scale: 1.0,
-            max_dim: 1024,
             is_dcm: false,
             dcm: None,
             last_error: None,
@@ -203,36 +179,6 @@ impl App {
 
         Ok(dyn_img)
     }
-
-    //    fn load_image(&mut self, ctx: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
-    //        let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-    //            if ext.eq_ignore_ascii_case("dcm") {
-    //                self.load_dcm(&path).unwrap()
-    //            } else {
-    //                self.is_dcm = false;
-    //                self.dcm = None;
-    //                image::open(&path)?
-    //            }
-    //        } else {
-    //            self.is_dcm = false;
-    //            // Default if no extension
-    //            image::open(&path)?
-    //        };
-    //
-    //        let gray_img = dyn_img.to_luma16();
-    //        // let dyn_img = max_dim_resize(dyn_img, self.max_dim);
-    //
-    //        // let rgba = dyn_img.to_rgba8();
-    //        // let color_img = dynamic_to_color_image(&DynamicImage::ImageRgba8(dyn_img.to_rgba8()));
-    //        let color_img = dynamic_to_color_image(&dyn_img);
-    //        self.gray_img = Some(gray_img);
-    //        self.color_img = Some(color_img.clone());
-    //        // (Re)upload texture
-    //        self.tex = Some(ctx.load_texture("image", color_img, egui::TextureOptions::LINEAR));
-    //        self.opened_path = Some(path);
-    //        self.fit_scale = 1.0;
-    //        Ok(())
-    //    }
 
     fn load_image(&mut self, ctx: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
         // Try to load without mutating state first
