@@ -122,18 +122,46 @@ impl App {
     }
 
     fn load_dcm(&mut self, path: &PathBuf) -> DynamicImage {
-        let dcm = dicom::object::open_file(&path).unwrap();
-        let image = dcm.decode_pixel_data().unwrap();
-        image.to_dynamic_image(0).unwrap()
+        self.dcm = Some(dicom::object::open_file(&path).unwrap());
+        self.is_dcm = true;
+
+        if let Some(dcm) = self.dcm.as_ref() {
+            let bits_allocated: u16 = dcm.element(tags::BITS_ALLOCATED).unwrap().to_int().unwrap();
+            if bits_allocated != 16u16 {
+                panic!("Mismatched BITS_ALLOCATED, expected 16 got {bits_allocated}");
+            }
+
+            let bits_stored: u16 = dcm.element(tags::BITS_STORED).unwrap().to_int().unwrap();
+            if bits_stored != 12u16 {
+                panic!("Mismatched BITS_STORED, expected 12 got {bits_stored}");
+            }
+
+            let photometric_interpret = dcm
+                .element(tags::PHOTOMETRIC_INTERPRETATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into_owned();
+            if photometric_interpret != "MONOCHROME2".to_string() {
+                panic!(
+                    "Mismatched PHOTOMETRIC_INTERPRETATION, expected MONOCHROME2 got {photometric_interpret}"
+                )
+            }
+        }
+
+        self.dcm
+            .as_mut()
+            .unwrap()
+            .decode_pixel_data()
+            .unwrap()
+            .to_dynamic_image(0)
+            .unwrap()
     }
 
     fn load_image(&mut self, ctx: &egui::Context, path: PathBuf) -> anyhow::Result<()> {
         let dyn_img = if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if ext.eq_ignore_ascii_case("dcm") {
-                self.dcm = Some(dicom::object::open_file(&path).unwrap());
-                let image = self.dcm.as_mut().unwrap().decode_pixel_data().unwrap();
-                self.is_dcm = true;
-                image.to_dynamic_image(0).unwrap()
+                self.load_dcm(&path)
             } else {
                 self.is_dcm = false;
                 self.dcm = None;
