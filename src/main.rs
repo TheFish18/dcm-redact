@@ -26,15 +26,39 @@ fn write_dynamic_image_to_dicom(
     img: &Gray16Image,
     save_path: &PathBuf,
 ) {
-    let mut buf = img.to_vec();
-    for px in &mut buf {
-        *px = (*px >> 4) & 0x0FFF
-    }
+    let raw_u16 = SmallVec::from_vec(img.to_vec());
 
-    let raw_u16 = SmallVec::from_vec(buf);
-    let new_pxs = DataElement::new(tags::PIXEL_DATA, VR::OW, PrimitiveValue::U16(raw_u16));
+    file_obj.put(DataElement::new(
+        tags::BITS_ALLOCATED,
+        VR::US,
+        PrimitiveValue::from(16u16),
+    ));
+    file_obj.put(DataElement::new(
+        tags::BITS_STORED,
+        VR::US,
+        PrimitiveValue::from(16u16),
+    ));
+    file_obj.put(DataElement::new(
+        tags::HIGH_BIT,
+        VR::US,
+        PrimitiveValue::from(15u16),
+    ));
+    file_obj.put(DataElement::new(
+        tags::PIXEL_REPRESENTATION,
+        VR::US,
+        PrimitiveValue::from(0u16),
+    )); // unsigned
+    file_obj.put(DataElement::new(
+        tags::PHOTOMETRIC_INTERPRETATION,
+        VR::CS,
+        PrimitiveValue::from("MONOCHROME2"),
+    ));
+    file_obj.put(DataElement::new(
+        tags::PIXEL_DATA,
+        VR::OW,
+        PrimitiveValue::U16(raw_u16),
+    ));
 
-    file_obj.put(new_pxs);
     let _ = file_obj.write_to_file(save_path);
 }
 
@@ -85,6 +109,7 @@ struct App {
     is_dcm: bool,
     dcm: Option<FileDicomObject<InMemDicomObject>>,
     last_error: Option<String>,
+    photometric_interpretation: Option<String>,
 }
 
 impl App {
@@ -101,6 +126,7 @@ impl App {
             is_dcm: false,
             dcm: None,
             last_error: None,
+            photometric_interpretation: None,
         }
     }
 
@@ -121,47 +147,35 @@ impl App {
                     DCMRedactErrors::ValueError("Invalid BITS_ALLOCATED value".to_string())
                 })?;
 
-            if bits_allocated != 16u16 {
+            if bits_allocated != 16u16 && bits_allocated != 12u16 {
                 return Err(DCMRedactErrors::ValueError(format!(
                     "Mismatched BITS_ALLOCATED, expected 16 got {bits_allocated}"
                 )));
             }
 
-            // Check Bits Stored
-            let bits_stored: u16 = dcm
-                .element(tags::BITS_STORED)
-                .map_err(|_| DCMRedactErrors::ValueError("Missing BITS_STORED tag".to_string()))?
-                .to_int()
-                .map_err(|_| {
-                    DCMRedactErrors::ValueError("Invalid BITS_STORED value".to_string())
-                })?;
-
-            if bits_stored != 12u16 {
-                return Err(DCMRedactErrors::ValueError(format!(
-                    "Mismatched BITS_STORED, expected 12 got {bits_stored}"
-                )));
-            }
-
             // Check Photometric Interpretation
-            let photometric_interpret = dcm
-                .element(tags::PHOTOMETRIC_INTERPRETATION)
-                .map_err(|_| {
-                    DCMRedactErrors::ValueError(
-                        "Missing PHOTOMETRIC_INTERPRETATION tag".to_string(),
-                    )
-                })?
-                .to_str()
-                .map_err(|_| {
-                    DCMRedactErrors::ValueError(
-                        "Invalid PHOTOMETRIC_INTERPRETATION value (not UTF-8)".to_string(),
-                    )
-                })?
-                .into_owned();
+            self.photometric_interpretation = Some(
+                dcm.element(tags::PHOTOMETRIC_INTERPRETATION)
+                    .map_err(|_| {
+                        DCMRedactErrors::ValueError(
+                            "Missing PHOTOMETRIC_INTERPRETATION tag".to_string(),
+                        )
+                    })?
+                    .to_str()
+                    .map_err(|_| {
+                        DCMRedactErrors::ValueError(
+                            "Invalid PHOTOMETRIC_INTERPRETATION value (not UTF-8)".to_string(),
+                        )
+                    })?
+                    .into_owned(),
+            );
 
-            if photometric_interpret != "MONOCHROME2" {
-                return Err(DCMRedactErrors::ValueError(format!(
-                    "Mismatched PHOTOMETRIC_INTERPRETATION, expected MONOCHROME2 got {photometric_interpret}"
-                )));
+            if let Some(v) = self.photometric_interpretation.as_ref() {
+                if v != "MONOCHROME1" && v != "MONOCHROME2" {
+                    return Err(DCMRedactErrors::ValueError(format!(
+                        "Mismatched PHOTOMETRIC_INTERPRETATION, expected MONOCHROME1 or MONOCHROME2 got {v}"
+                    )));
+                }
             }
         }
 
