@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use dicom::core::smallvec::SmallVec;
 use dicom::pixeldata::PixelDecoder;
 use dicom::{
@@ -11,8 +11,8 @@ use eframe::{
     egui,
     egui::{ColorImage, Pos2, Rect, Sense, Stroke, Vec2},
 };
-use image::{ImageBuffer, Luma};
 use image::imageops::FilterType;
+use image::{ImageBuffer, Luma};
 use std::path::PathBuf;
 
 type Gray16Image = ImageBuffer<Luma<u16>, Vec<u16>>;
@@ -20,6 +20,14 @@ type Gray16Image = ImageBuffer<Luma<u16>, Vec<u16>>;
 #[derive(Debug)]
 enum DCMRedactErrors {
     ValueError(String),
+}
+
+fn max_display_dim_from_env() -> u32 {
+    std::env::var("DCM_REDACT_MAX_DIM")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0 && v <= 8192)
+        .unwrap_or(8192)
 }
 
 fn write_dynamic_image_to_dicom(
@@ -100,7 +108,8 @@ fn gray16_to_display_color_image(
     photometric: Option<&str>,
 ) -> ColorImage {
     // Resize full-res gray -> display gray (keeps black boxes crisp w/ Nearest)
-    let resized: Gray16Image = image::imageops::resize(full, display_w, display_h, FilterType::Nearest);
+    let resized: Gray16Image =
+        image::imageops::resize(full, display_w, display_h, FilterType::Nearest);
 
     let invert = matches!(photometric, Some("MONOCHROME1"));
 
@@ -140,6 +149,7 @@ struct App {
     dcm: Option<FileDicomObject<InMemDicomObject>>,
     last_error: Option<String>,
     photometric_interpretation: Option<String>,
+    max_display_dim: u32,
 }
 
 impl App {
@@ -158,6 +168,7 @@ impl App {
             dcm: None,
             last_error: None,
             photometric_interpretation: None,
+            max_display_dim: max_display_dim_from_env(),
         }
     }
 
@@ -174,7 +185,9 @@ impl App {
                 .element(tags::BITS_ALLOCATED)
                 .map_err(|_| DCMRedactErrors::ValueError("Missing BITS_ALLOCATED tag".to_string()))?
                 .to_int()
-                .map_err(|_| DCMRedactErrors::ValueError("Invalid BITS_ALLOCATED value".to_string()))?;
+                .map_err(|_| {
+                    DCMRedactErrors::ValueError("Invalid BITS_ALLOCATED value".to_string())
+                })?;
 
             if bits_allocated != 16u16 && bits_allocated != 12u16 {
                 return Err(DCMRedactErrors::ValueError(format!(
@@ -216,7 +229,9 @@ impl App {
             .decode_pixel_data()
             .map_err(|e| DCMRedactErrors::ValueError(format!("Failed to decode pixel data: {e}")))?
             .to_dynamic_image(0)
-            .map_err(|e| DCMRedactErrors::ValueError(format!("Failed to convert to DynamicImage: {e}")))?;
+            .map_err(|e| {
+                DCMRedactErrors::ValueError(format!("Failed to convert to DynamicImage: {e}"))
+            })?;
 
         Ok(dyn_img.to_luma16())
     }
@@ -243,7 +258,7 @@ impl App {
 
         // Determine display size <= 8192 while keeping aspect ratio
         let (full_w, full_h) = full_gray.dimensions();
-        let (disp_w, disp_h) = fit_within_max_dim(full_w, full_h, 8192);
+        let (disp_w, disp_h) = fit_within_max_dim(full_w, full_h, self.max_display_dim);
 
         // Build display ColorImage from full-res gray
         let color_img = gray16_to_display_color_image(
@@ -358,11 +373,14 @@ impl eframe::App for App {
                 }
 
                 if ui.button("Save As…").clicked() {
-                    if let (Some(img), Some(path)) = (self.gray_img.as_ref(), self.opened_path.clone())
+                    if let (Some(img), Some(path)) =
+                        (self.gray_img.as_ref(), self.opened_path.clone())
                     {
                         let file_name = path.file_name().unwrap().to_owned().into_string().unwrap();
 
-                        if let Some(out) = rfd::FileDialog::new().set_file_name(file_name).save_file() {
+                        if let Some(out) =
+                            rfd::FileDialog::new().set_file_name(file_name).save_file()
+                        {
                             if self.is_dcm {
                                 if let Some(dcm) = self.dcm.as_mut() {
                                     write_dynamic_image_to_dicom(dcm, img, &out);
@@ -396,8 +414,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 if let (Some(tex), Some(ci)) = (self.tex.as_ref(), self.color_img.as_ref()) {
-                    let img_size =
-                        Vec2::new(ci.size[0] as f32, ci.size[1] as f32) * self.fit_scale;
+                    let img_size = Vec2::new(ci.size[0] as f32, ci.size[1] as f32) * self.fit_scale;
 
                     let response = ui.add(
                         egui::Image::from_texture((tex.id(), img_size))
@@ -437,8 +454,8 @@ impl eframe::App for App {
                     // Handle mouse interactions over the image
                     if response.hovered() || response.dragged() || response.clicked() {
                         if response.drag_started() {
-                            if let Some(px) =
-                                self.screen_to_pixel(img_rect, response.interact_pointer_pos().unwrap())
+                            if let Some(px) = self
+                                .screen_to_pixel(img_rect, response.interact_pointer_pos().unwrap())
                             {
                                 self.drag_start_px = Some(px);
                                 self.drag_start_screen = response.interact_pointer_pos();
@@ -465,10 +482,14 @@ impl eframe::App for App {
                     }
 
                     // Draw temporary selection rectangle overlay
-                    if let (Some(p0), Some(p1)) = (self.drag_start_screen, self.drag_current_screen) {
+                    if let (Some(p0), Some(p1)) = (self.drag_start_screen, self.drag_current_screen)
+                    {
                         let rect = Rect::from_two_pos(p0, p1);
-                        ui.painter()
-                            .rect_stroke(rect, 0.0, Stroke::new(2.0, egui::Color32::YELLOW));
+                        ui.painter().rect_stroke(
+                            rect,
+                            0.0,
+                            Stroke::new(2.0, egui::Color32::YELLOW),
+                        );
                     }
                 } else {
                     ui.label("Click “Open Image…” to begin.");
