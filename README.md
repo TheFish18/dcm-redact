@@ -5,6 +5,12 @@ It currently supports PNG, TIFF, DICOM (), and other similar image formats.
 
 ⚠️ The redaction rectangle must be fully contained within the image boundaries.
 
+## Settings
+The following env variables will control various settings: 
+- `DCM_REDACT_MAX_DIM`: int, default is 8192. the image being shown will be resized such that the `max(h, w) == DCM_REDACT_MAX_DIM`. Setting this to a smaller value will make rendering faster for larger images.
+    - e.g. for linux `export DCM_REDACT_MAX_DIM=2048` for windows powershell `$env:DCM_REDACT_MAX_DIM=2048`, and windows cmd `set DCM_REDACT_MAX_DIM=2048`
+- The redacted image will always be saved in full resolution
+
 # DICOM Compatibility
 
 At present, the program supports only DICOM images with the following pixel data attributes:
